@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data (raw source files can be large)
+data/raw/
+
+# Models
+models/*.pkl
+
+# Claude Code
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
