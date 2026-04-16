@@ -1,0 +1,9 @@
+series,top_seed_abbrev,top_seed_name,top_seed_rank,bottom_seed_abbrev,bottom_seed_name,bottom_seed_rank,predicted_winner_abbrev,predicted_winner_name,p_top_seed_wins,p_bottom_seed_wins,lr_p_hi,rf_p_hi,points_hi,points_lo,team_hi,team_lo,goal_diff_diff
+A,BUF,Buffalo Sabres,D1,BOS,Boston Bruins,WC1,BUF,Buffalo Sabres,0.533,0.467,0.547,0.518,109.0,100.0,BUF,BOS,25.0
+B,TBL,Tampa Bay Lightning,D2,MTL,Montréal Canadiens,D3,TBL,Tampa Bay Lightning,0.506,0.494,0.518,0.494,106.0,106.0,TBL,MTL,32.0
+C,CAR,Carolina Hurricanes,D1,OTT,Ottawa Senators,WC2,CAR,Carolina Hurricanes,0.585,0.415,0.594,0.575,113.0,99.0,CAR,OTT,24.0
+D,PIT,Pittsburgh Penguins,D2,PHI,Philadelphia Flyers,D3,PHI,Philadelphia Flyers,0.312,0.688,0.338,0.287,98.0,98.0,PIT,PHI,18.0
+E,COL,Colorado Avalanche,D1,LAK,Los Angeles Kings,WC2,COL,Colorado Avalanche,0.726,0.274,0.877,0.574,119.0,90.0,COL,LAK,117.0
+F,DAL,Dallas Stars,D2,MIN,Minnesota Wild,D3,DAL,Dallas Stars,0.54,0.46,0.544,0.537,112.0,104.0,DAL,MIN,21.0
+G,VGK,Vegas Golden Knights,D1,UTA,Utah Mammoth,WC1,UTA,Utah Mammoth,0.349,0.651,0.34,0.358,95.0,92.0,VGK,UTA,-15.0
+H,EDM,Edmonton Oilers,D2,ANA,Anaheim Ducks,D3,ANA,Anaheim Ducks,0.466,0.534,0.471,0.461,91.0,90.0,EDM,ANA,24.0

@@ -19,6 +19,13 @@ BASE_URL = "https://api-web.nhle.com/v1"
 # Maps season ID (e.g. "20232024") -> last day of regular season
 # Used to pull final standings before playoffs begin
 SEASON_END_DATES = {
+    "20102011": "2011-04-10",
+    "20112012": "2012-04-07",
+    "20122013": "2013-04-27",  # Lockout-shortened season (48 games)
+    "20132014": "2014-04-13",
+    "20142015": "2015-04-11",
+    "20152016": "2016-04-10",
+    "20162017": "2017-04-09",
     "20172018": "2018-04-08",
     "20182019": "2019-04-06",
     "20192020": "2020-03-11",  # Season paused/restarted as bubble; standings reflect pre-pause
@@ -26,6 +33,7 @@ SEASON_END_DATES = {
     "20212022": "2022-04-29",
     "20222023": "2023-04-14",
     "20232024": "2024-04-18",
+    "20242025": "2025-04-17",
 }
 
 

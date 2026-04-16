@@ -22,6 +22,13 @@ PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
 SEASONS = [
+    "20102011",
+    "20112012",
+    "20122013",
+    "20132014",
+    "20142015",
+    "20152016",
+    "20162017",
     "20172018",
     "20182019",
     "20192020",
@@ -29,6 +36,7 @@ SEASONS = [
     "20212022",
     "20222023",
     "20232024",
+    "20242025",
 ]
 
 # Stats we want to compare between the two teams in each series
