@@ -19,7 +19,6 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 from pathlib import Path
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
@@ -276,70 +275,145 @@ def predict_matchups(matchup_df: pd.DataFrame, lr, rf, scaler) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Team colors — primary or most visually distinctive color per team.
+# Within each series, colors are chosen to contrast with each other.
+# ---------------------------------------------------------------------------
+
+TEAM_COLORS = {
+    # Series A
+    "BUF": "#002654",   # Sabres navy
+    "BOS": "#FFB81C",   # Bruins gold
+    # Series B
+    "TBL": "#002868",   # Lightning blue
+    "MTL": "#AF1E2D",   # Canadiens red
+    # Series C — both teams are red; use OTT gold as secondary to contrast
+    "CAR": "#CC0000",   # Hurricanes red
+    "OTT": "#C69214",   # Senators gold
+    # Series D
+    "PIT": "#000000",   # Penguins black
+    "PHI": "#F74902",   # Flyers orange
+    # Series E
+    "COL": "#6F263D",   # Avalanche burgundy
+    "LAK": "#A2AAAD",   # Kings silver
+    # Series F — both teams are green; use MIN red as secondary to contrast
+    "DAL": "#006847",   # Stars green
+    "MIN": "#AF1E2D",   # Wild red
+    # Series G
+    "VGK": "#B4975A",   # Golden Knights gold
+    "UTA": "#6CACE4",   # Utah blue
+    # Series H — both teams are orange; use ANA black as secondary to contrast
+    "EDM": "#FF4C00",   # Oilers orange
+    "ANA": "#111111",   # Ducks black
+}
+
+
+def _text_color(hex_color: str) -> str:
+    """Return black or white depending on the luminance of the background."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16) / 255, int(h[2:4], 16) / 255, int(h[4:6], 16) / 255
+    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return "#111111" if lum > 0.45 else "white"
+
+
+# ---------------------------------------------------------------------------
 # Visualization
 # ---------------------------------------------------------------------------
 
 def plot_predictions(predictions: pd.DataFrame) -> None:
-    """Generate a bar chart showing predicted win probability for each series."""
-    fig, ax = plt.subplots(figsize=(12, 6))
+    """
+    Stacked horizontal probability chart with team colors.
+    Each row = one matchup. Left portion = top seed win probability (team color),
+    right portion = bottom seed win probability (team color).
+    Text inside each bar shows seed, abbreviation, and win %.
+    """
+    BG = "#F7F7F7"
 
-    # Build matchup labels and probabilities
-    labels = []
-    top_probs = []
-    bot_probs = []
-    bar_colors_top = []
-    bar_colors_bot = []
+    # y positions — East at top, gap, West below
+    y_pos = {"A": 8.5, "B": 7.5, "C": 6.5, "D": 5.5,
+              "E": 4.0, "F": 3.0, "G": 2.0, "H": 1.0}
 
-    WIN_COLOR = "#2e7d32"
-    LOSE_COLOR = "#c62828"
-    GRAY = "#9e9e9e"
+    fig, ax = plt.subplots(figsize=(13, 8))
+    fig.patch.set_facecolor(BG)
+    ax.set_facecolor(BG)
 
     for _, row in predictions.iterrows():
-        label = (
-            f"({row['top_seed_rank']}) {row['top_seed_abbrev']}\nvs\n"
-            f"({row['bottom_seed_rank']}) {row['bottom_seed_abbrev']}"
-        )
-        labels.append(label)
-        p_top = row["p_top_seed_wins"]
-        p_bot = row["p_bottom_seed_wins"]
-        top_probs.append(p_top)
-        bot_probs.append(p_bot)
+        s      = row["series"]
+        y      = y_pos[s]
+        top    = row["top_seed_abbrev"]
+        bot    = row["bottom_seed_abbrev"]
+        r_top  = row["top_seed_rank"]
+        r_bot  = row["bottom_seed_rank"]
+        p_top  = row["p_top_seed_wins"]
+        p_bot  = row["p_bottom_seed_wins"]
+        c_top  = TEAM_COLORS.get(top, "#888888")
+        c_bot  = TEAM_COLORS.get(bot, "#888888")
 
-        top_wins = row["predicted_winner_abbrev"] == row["top_seed_abbrev"]
-        bar_colors_top.append(WIN_COLOR if top_wins else LOSE_COLOR)
-        bar_colors_bot.append(LOSE_COLOR if top_wins else WIN_COLOR)
+        # Subtle full-width track
+        ax.barh(y, 1.0, height=0.68, color="#E0E0E0", zorder=1)
 
-    x = np.arange(len(labels))
-    width = 0.38
+        # Team probability bars
+        ax.barh(y, p_top,        height=0.68, color=c_top, zorder=2)
+        ax.barh(y, p_bot, left=p_top, height=0.68, color=c_bot, zorder=2)
 
-    bars_top = ax.bar(x - width / 2, top_probs, width, color=bar_colors_top, alpha=0.85)
-    bars_bot = ax.bar(x + width / 2, bot_probs, width, color=bar_colors_bot, alpha=0.85)
+        # Thin white divider at the join point
+        ax.plot([p_top, p_top], [y - 0.38, y + 0.38], color="white",
+                linewidth=2, zorder=3)
 
-    # Annotate bars with probability and predicted winner label
-    for bar, prob, row in zip(bars_top, top_probs, predictions.itertuples()):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                f"{prob:.0%}", ha="center", va="bottom", fontsize=9, fontweight="bold")
-    for bar, prob in zip(bars_bot, bot_probs):
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
-                f"{prob:.0%}", ha="center", va="bottom", fontsize=9, fontweight="bold")
+        # Labels inside bars — only if bar is wide enough to fit text
+        top_label = f"({r_top}) {top}  {p_top:.0%}"
+        bot_label = f"{p_bot:.0%}  {bot} ({r_bot})"
 
-    ax.axhline(0.5, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, fontsize=9)
-    ax.set_ylim(0, 1.1)
-    ax.set_ylabel("Win Probability (Ensemble Model)")
-    ax.set_title(
-        "2025–26 NHL First-Round Playoff Predictions\n"
-        "(Logistic Regression + Random Forest, trained on 225 series / 15 seasons)"
-    )
+        if p_top >= 0.18:
+            ax.text(p_top / 2, y, top_label,
+                    ha="center", va="center", fontsize=10.5,
+                    color=_text_color(c_top), fontweight="bold", zorder=4)
+        else:
+            ax.text(p_top - 0.01, y, top_label,
+                    ha="right", va="center", fontsize=9,
+                    color="#444444", zorder=4)
 
-    win_patch = mpatches.Patch(color=WIN_COLOR, alpha=0.85, label="Predicted winner")
-    lose_patch = mpatches.Patch(color=LOSE_COLOR, alpha=0.85, label="Predicted loser")
-    ax.legend(handles=[win_patch, lose_patch], loc="upper right")
+        if p_bot >= 0.18:
+            ax.text(p_top + p_bot / 2, y, bot_label,
+                    ha="center", va="center", fontsize=10.5,
+                    color=_text_color(c_bot), fontweight="bold", zorder=4)
+        else:
+            ax.text(p_top + p_bot + 0.01, y, bot_label,
+                    ha="left", va="center", fontsize=9,
+                    color="#444444", zorder=4)
 
-    plt.tight_layout()
+    # 50 % reference line
+    ax.axvline(0.5, color="#999999", linewidth=1, linestyle="--", zorder=1)
+
+    # Conference section labels
+    for label, y_label, y_line in [
+        ("EASTERN CONFERENCE", 9.15, 5.05),
+        ("WESTERN CONFERENCE",  4.65, 0.55),
+    ]:
+        ax.text(0.5, y_label, label, ha="center", va="bottom", fontsize=10,
+                color="#555555", fontweight="bold", fontstyle="italic",
+                transform=ax.get_yaxis_transform())
+        ax.axhline(y_line, color="#CCCCCC", linewidth=0.8, zorder=0)
+
+    # Axes styling
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0.3, 9.45)
+    ax.set_xticks([0.25, 0.50, 0.75])
+    ax.set_xticklabels(["25%", "50%", "75%"], color="#888888", fontsize=9)
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.tick_params(length=0)
+
+    # Title + subtitle
+    ax.set_title("2025–26 NHL First Round Predictions", fontsize=15,
+                 fontweight="bold", color="#222222", pad=14)
+    fig.text(0.5, 0.01,
+             "Ensemble model (LR + RF) · trained on 225 series / 15 seasons · 59.6% CV accuracy",
+             ha="center", fontsize=8, color="#AAAAAA")
+
+    plt.tight_layout(rect=[0, 0.03, 1, 1])
     out_path = OUTPUTS_DIR / "predictions_2026.png"
-    plt.savefig(out_path, dpi=150)
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=BG)
     plt.close()
     print(f"\nChart saved: {out_path}")
 
