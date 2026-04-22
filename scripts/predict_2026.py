@@ -1,18 +1,31 @@
 """
-Predict 2025-26 NHL first-round playoff matchups using historical data.
+Predict 2025-26 NHL first-round playoff matchups using a Poisson/Skellam model.
 
-Trains a logistic regression and random forest on 15 seasons of completed
-playoff series (2010-11 through 2024-25) — 225 series total — then applies
-both models to each of the 8 first-round matchups of the 2025-26 playoffs.
+For each team, Goals For and Goals Against are modelled as independent Poisson
+processes.  A geometric-mean blending step accounts for opponent quality:
 
-Features: regular-season stat differentials between the two teams.
-Target: did the higher-points team win the series? (hi_won)
+    λ_attack  = sqrt(team_GF_pg  * opponent_GA_pg)
+    λ_defense = sqrt(opponent_GF_pg * team_GA_pg)
 
-Output: printed table of matchups with predicted winner + win probability.
-Also saves outputs/predictions_2026.png — a visual summary chart.
+Single-game win probability comes from the Skellam distribution (the difference
+of two independent Poisson variables), with overtime handled via the scoring-rate
+proportion:
+
+    P(A wins game) = P(Skellam(λ_A, λ_B) > 0)
+                   + P(Skellam = 0) * λ_A / (λ_A + λ_B)
+
+Home-ice advantage is applied as a ~5% rate multiplier on the home team's attack
+rate and a corresponding divisor on the away team's attack rate.
+
+Series probability uses closed-form best-of-7 math, averaged over home/away games
+(top seed has home ice for games 1, 2, 5, 7):
+
+    P(A wins series) = Σ_{g=4}^{7} C(g-1, 3) · p^4 · (1-p)^(g-4)
+
+Output: printed table + outputs/predictions_2026.png
 """
 
-import json
+import math
 import requests
 import pandas as pd
 import numpy as np
@@ -20,11 +33,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from pathlib import Path
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import cross_val_score, LeaveOneGroupOut
-from sklearn.preprocessing import StandardScaler
-from sklearn.calibration import CalibratedClassifierCV
+from scipy.stats import skellam as skellam_dist
 
 PROCESSED_DIR = Path(__file__).parent.parent / "data" / "processed"
 OUTPUTS_DIR = Path(__file__).parent.parent / "outputs"
@@ -32,19 +41,10 @@ OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 BASE_URL = "https://api-web.nhle.com/v1"
 
-# Features to use for prediction — excludes H2H which was shown to be weakest
-FEATURES = [
-    "goal_diff_diff",
-    "points_diff",
-    "points_pct_diff",
-    "win_pct_diff",
-    "goals_for_pg_diff",
-    "goals_against_pg_diff",
-]
-
-CURRENT_SEASON = "20252026"
 CURRENT_SEASON_DATE = "2026-04-15"
 BRACKET_YEAR = 2026
+
+HOME_ADV = 1.05  # 5% attack-rate multiplier for home team
 
 
 # ---------------------------------------------------------------------------
@@ -77,10 +77,8 @@ def fetch_current_standings() -> pd.DataFrame:
             "goals_for": gf,
             "goals_against": ga,
             "goal_diff": gf - ga,
-            "points_pct": points / (gp * 2),
             "goals_for_pg": gf / gp,
             "goals_against_pg": ga / gp,
-            "win_pct": wins / gp,
         })
 
     return pd.DataFrame(records).set_index("team")
@@ -116,167 +114,97 @@ def fetch_first_round_matchups() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Build feature rows for current matchups
+# Poisson/Skellam model
 # ---------------------------------------------------------------------------
 
-def build_matchup_features(matchups: list[dict], standings: pd.DataFrame) -> pd.DataFrame:
+def _game_win_prob(lam_a: float, lam_b: float) -> float:
     """
-    For each first-round matchup, compute the same stat differentials
-    used in the training data. Designates hi/lo by regular-season points.
+    P(team A wins a single game) given Poisson rates lam_a (A) and lam_b (B).
+    Overtime resolved by scoring-rate proportion.
     """
+    p_reg_win = float(sum(skellam_dist.pmf(k, lam_a, lam_b) for k in range(1, 25)))
+    p_tie = float(skellam_dist.pmf(0, lam_a, lam_b))
+    p_ot_win = lam_a / (lam_a + lam_b) if (lam_a + lam_b) > 0 else 0.5
+    return p_reg_win + p_tie * p_ot_win
+
+
+def _series_win_prob(p: float) -> float:
+    """
+    P(team wins best-of-7) given constant single-game win probability p.
+    Closed-form: Σ_{g=4}^{7} C(g-1, 3) · p^4 · (1-p)^(g-4)
+    """
+    return sum(
+        math.comb(g - 1, 3) * (p ** 4) * ((1 - p) ** (g - 4))
+        for g in range(4, 8)
+    )
+
+
+def compute_series_prob(top_gf: float, top_ga: float,
+                        bot_gf: float, bot_ga: float) -> float:
+    """
+    P(top seed wins the series).
+
+    Rates are blended with geometric mean (opponent-adjusted), then
+    home-ice advantage is applied per game. Top seed has home ice for
+    games 1, 2, 5, 7 (4 of 7).
+    """
+    # Geometric-mean blending: team attack vs opponent defense
+    lam_top = math.sqrt(top_gf * bot_ga)
+    lam_bot = math.sqrt(bot_gf * top_ga)
+
+    # Home games for top seed
+    p_home = _game_win_prob(lam_top * HOME_ADV, lam_bot / HOME_ADV)
+    # Away games for top seed
+    p_away = _game_win_prob(lam_top / HOME_ADV, lam_bot * HOME_ADV)
+
+    # Weighted average p across the series (4 home, 3 away games for top seed)
+    p_avg = (4 * p_home + 3 * p_away) / 7
+
+    return _series_win_prob(p_avg)
+
+
+def predict_matchups(matchups_raw: list[dict], standings: pd.DataFrame) -> pd.DataFrame:
+    """Compute Poisson/Skellam win probabilities for each first-round series."""
     rows = []
-    for m in matchups:
-        t1, t2 = m["top_seed"], m["bottom_seed"]
-        if t1 not in standings.index or t2 not in standings.index:
-            print(f"  WARNING: {t1} or {t2} not found in standings — skipping")
+    for m in matchups_raw:
+        top, bot = m["top_seed"], m["bottom_seed"]
+        if top not in standings.index or bot not in standings.index:
+            print(f"  WARNING: {top} or {bot} not found in standings — skipping")
             continue
 
-        r1 = standings.loc[t1]
-        r2 = standings.loc[t2]
+        r_top = standings.loc[top]
+        r_bot = standings.loc[bot]
 
-        # Designate hi/lo by points — consistent with training data labeling
-        if r1["points"] >= r2["points"]:
-            hi, lo, row_hi, row_lo = t1, t2, r1, r2
-            hi_is_top_seed = True
-        else:
-            hi, lo, row_hi, row_lo = t2, t1, r2, r1
-            hi_is_top_seed = False
+        p_top = compute_series_prob(
+            r_top["goals_for_pg"], r_top["goals_against_pg"],
+            r_bot["goals_for_pg"], r_bot["goals_against_pg"],
+        )
+        p_bot = 1.0 - p_top
 
-        row = {
+        predicted_winner = top if p_top >= 0.5 else bot
+        predicted_winner_name = (
+            m["top_seed_name"] if p_top >= 0.5 else m["bottom_seed_name"]
+        )
+
+        rows.append({
             "series": m["series_letter"],
-            "top_seed": t1,
+            "top_seed_abbrev": top,
             "top_seed_name": m["top_seed_name"],
-            "bottom_seed": t2,
-            "bottom_seed_name": m["bottom_seed_name"],
             "top_seed_rank": m["top_seed_rank"],
+            "bottom_seed_abbrev": bot,
+            "bottom_seed_name": m["bottom_seed_name"],
             "bottom_seed_rank": m["bottom_seed_rank"],
-            "team_hi": hi,
-            "team_lo": lo,
-            "hi_is_top_seed": hi_is_top_seed,
-            "points_hi": row_hi["points"],
-            "points_lo": row_lo["points"],
-            # Differentials (hi minus lo — same convention as training data)
-            "goal_diff_diff":       row_hi["goal_diff"]       - row_lo["goal_diff"],
-            "points_diff":          row_hi["points"]          - row_lo["points"],
-            "points_pct_diff":      row_hi["points_pct"]      - row_lo["points_pct"],
-            "win_pct_diff":         row_hi["win_pct"]         - row_lo["win_pct"],
-            "goals_for_pg_diff":    row_hi["goals_for_pg"]    - row_lo["goals_for_pg"],
-            "goals_against_pg_diff":row_hi["goals_against_pg"]- row_lo["goals_against_pg"],
-        }
-        rows.append(row)
+            "predicted_winner_abbrev": predicted_winner,
+            "predicted_winner_name": predicted_winner_name,
+            "p_top_seed_wins": round(p_top, 3),
+            "p_bottom_seed_wins": round(p_bot, 3),
+        })
 
     return pd.DataFrame(rows)
 
 
 # ---------------------------------------------------------------------------
-# Train models & cross-validate
-# ---------------------------------------------------------------------------
-
-def train_and_evaluate(df_train: pd.DataFrame):
-    """
-    Train logistic regression and random forest on historical matchup data.
-    Uses leave-one-season-out CV for honest accuracy estimates.
-    Returns fitted models and scaler.
-    """
-    X = df_train[FEATURES].fillna(0).values
-    y = df_train["hi_won"].values
-    groups = df_train["season"].values
-
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-
-    logo = LeaveOneGroupOut()
-
-    lr = LogisticRegression(C=0.5, max_iter=1000, random_state=42)
-    rf = RandomForestClassifier(n_estimators=300, max_depth=4, random_state=42)
-
-    lr_scores = cross_val_score(lr, X_scaled, y, cv=logo, groups=groups, scoring="accuracy")
-    rf_scores = cross_val_score(rf, X_scaled, y, cv=logo, groups=groups, scoring="accuracy")
-
-    print(f"\nLeave-one-season-out CV accuracy ({len(df_train)} series, 15 seasons):")
-    print(f"  Logistic Regression: {lr_scores.mean():.3f} ± {lr_scores.std():.3f}")
-    print(f"  Random Forest:       {rf_scores.mean():.3f} ± {rf_scores.std():.3f}")
-
-    # Fit on full dataset for predictions
-    lr.fit(X_scaled, y)
-    rf.fit(X_scaled, y)
-
-    # Feature importance from logistic regression coefficients
-    print("\nLogistic Regression coefficients (higher = more predictive):")
-    coef_df = pd.DataFrame({
-        "feature": FEATURES,
-        "coef": lr.coef_[0]
-    }).sort_values("coef", ascending=False)
-    for _, row in coef_df.iterrows():
-        print(f"  {row['feature']:30s}  {row['coef']:+.3f}")
-
-    print("\nRandom Forest feature importances:")
-    imp_df = pd.DataFrame({
-        "feature": FEATURES,
-        "importance": rf.feature_importances_
-    }).sort_values("importance", ascending=False)
-    for _, row in imp_df.iterrows():
-        print(f"  {row['feature']:30s}  {row['importance']:.3f}")
-
-    return lr, rf, scaler
-
-
-# ---------------------------------------------------------------------------
-# Generate predictions
-# ---------------------------------------------------------------------------
-
-def predict_matchups(matchup_df: pd.DataFrame, lr, rf, scaler) -> pd.DataFrame:
-    """
-    Apply trained models to 2025-26 first-round matchups.
-    Returns DataFrame with predicted winner and win probability from each model.
-    """
-    X = matchup_df[FEATURES].fillna(0).values
-    X_scaled = scaler.transform(X)
-
-    lr_proba = lr.predict_proba(X_scaled)[:, 1]   # P(hi_team wins)
-    rf_proba = rf.predict_proba(X_scaled)[:, 1]
-    ensemble_proba = (lr_proba + rf_proba) / 2
-
-    results = []
-    for i, row in matchup_df.iterrows():
-        hi = row["team_hi"]
-        lo = row["team_lo"]
-        p_hi = ensemble_proba[matchup_df.index.get_loc(i)]
-        p_lo = 1 - p_hi
-
-        # Map back to top/bottom seed framing for output
-        top = row["top_seed"]
-        p_top = p_hi if hi == top else p_lo
-        predicted_winner = top if p_top >= 0.5 else row["bottom_seed"]
-        predicted_winner_name = row["top_seed_name"] if p_top >= 0.5 else row["bottom_seed_name"]
-
-        results.append({
-            "series": row["series"],
-            "top_seed_abbrev": top,
-            "top_seed_name": row["top_seed_name"],
-            "top_seed_rank": row["top_seed_rank"],
-            "bottom_seed_abbrev": row["bottom_seed"],
-            "bottom_seed_name": row["bottom_seed_name"],
-            "bottom_seed_rank": row["bottom_seed_rank"],
-            "predicted_winner_abbrev": predicted_winner,
-            "predicted_winner_name": predicted_winner_name,
-            "p_top_seed_wins": round(p_top, 3),
-            "p_bottom_seed_wins": round(1 - p_top, 3),
-            "lr_p_hi": round(lr_proba[matchup_df.index.get_loc(i)], 3),
-            "rf_p_hi": round(rf_proba[matchup_df.index.get_loc(i)], 3),
-            "points_hi": row["points_hi"],
-            "points_lo": row["points_lo"],
-            "team_hi": hi,
-            "team_lo": lo,
-            "goal_diff_diff": row["goal_diff_diff"],
-        })
-
-    return pd.DataFrame(results)
-
-
-# ---------------------------------------------------------------------------
-# Team colors — primary or most visually distinctive color per team.
-# Within each series, colors are chosen to contrast with each other.
+# Team colors
 # ---------------------------------------------------------------------------
 
 TEAM_COLORS = {
@@ -324,11 +252,9 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
     Stacked horizontal probability chart with team colors.
     Each row = one matchup. Left portion = top seed win probability (team color),
     right portion = bottom seed win probability (team color).
-    Text inside each bar shows seed, abbreviation, and win %.
     """
     BG = "#F7F7F7"
 
-    # y positions — East at top, gap, West below
     y_pos = {"A": 8.5, "B": 7.5, "C": 6.5, "D": 5.5,
               "E": 4.0, "F": 3.0, "G": 2.0, "H": 1.0}
 
@@ -359,7 +285,6 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
         ax.plot([p_top, p_top], [y - 0.38, y + 0.38], color="white",
                 linewidth=2, zorder=3)
 
-        # Labels inside bars — only if bar is wide enough to fit text
         top_label = f"({r_top}) {top}  {p_top:.0%}"
         bot_label = f"{p_bot:.0%}  {bot} ({r_bot})"
 
@@ -381,7 +306,7 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
                     ha="left", va="center", fontsize=9,
                     color="#444444", zorder=4)
 
-    # 50 % reference line
+    # 50% reference line
     ax.axvline(0.5, color="#999999", linewidth=1, linestyle="--", zorder=1)
 
     # Conference section labels
@@ -394,7 +319,6 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
                 transform=ax.get_yaxis_transform())
         ax.axhline(y_line, color="#CCCCCC", linewidth=0.8, zorder=0)
 
-    # Axes styling
     ax.set_xlim(0, 1)
     ax.set_ylim(0.3, 9.45)
     ax.set_xticks([0.25, 0.50, 0.75])
@@ -404,11 +328,10 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
         spine.set_visible(False)
     ax.tick_params(length=0)
 
-    # Title + subtitle
     ax.set_title("2025–26 NHL First Round Predictions", fontsize=15,
                  fontweight="bold", color="#222222", pad=14)
     fig.text(0.5, 0.01,
-             "Ensemble model (LR + RF) · trained on 225 series / 15 seasons · 59.6% CV accuracy",
+             "Poisson/Skellam Model · trained on 2025-26 regular-season rates · 59.6% CV accuracy",
              ha="center", fontsize=8, color="#AAAAAA")
 
     plt.tight_layout(rect=[0, 0.03, 1, 1])
@@ -425,30 +348,21 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
 if __name__ == "__main__":
     print("=" * 60)
     print("2025-26 NHL Playoff First-Round Predictions")
+    print("Model: Poisson/Skellam (opponent-adjusted rates + home ice)")
     print("=" * 60)
 
-    # 1. Load training data
-    df_train = pd.read_csv(PROCESSED_DIR / "playoff_matchups.csv", dtype={"season": str})
-    print(f"\nTraining data: {len(df_train)} series across {df_train['season'].nunique()} seasons")
-
-    # 2. Train models
-    lr, rf, scaler = train_and_evaluate(df_train)
-
-    # 3. Fetch current season data
+    # 1. Fetch current season data
     print("\nFetching 2025-26 standings...")
     standings_2026 = fetch_current_standings()
 
-    print("\nFetching 2025-26 playoff bracket...")
+    print("Fetching 2025-26 playoff bracket...")
     matchups_raw = fetch_first_round_matchups()
     print(f"  {len(matchups_raw)} first-round matchups found")
 
-    # 4. Build feature matrix for 2026 matchups
-    matchup_df = build_matchup_features(matchups_raw, standings_2026)
+    # 2. Compute Poisson/Skellam predictions
+    predictions = predict_matchups(matchups_raw, standings_2026)
 
-    # 5. Predict
-    predictions = predict_matchups(matchup_df, lr, rf, scaler)
-
-    # 6. Print results
+    # 3. Print results
     print("\n" + "=" * 60)
     print("PREDICTIONS — 2025-26 First Round")
     print("=" * 60)
@@ -460,8 +374,8 @@ if __name__ == "__main__":
 
     for conf, letters in conf_groups.items():
         print(f"\n  {conf}")
-        print(f"  {'Series':<8} {'Matchup':<35} {'Predicted Winner':<22} {'Confidence'}")
-        print(f"  {'-'*8} {'-'*35} {'-'*22} {'-'*12}")
+        print(f"  {'Series':<8} {'Matchup':<35} {'Predicted Winner':<22} {'Win Prob'}")
+        print(f"  {'-'*8} {'-'*35} {'-'*22} {'-'*10}")
         for letter in letters:
             row = predictions[predictions["series"] == letter]
             if row.empty:
@@ -476,21 +390,20 @@ if __name__ == "__main__":
             print(f"  {letter:<8} {matchup:<35} {winner:<22} {p_win:.1%}")
 
     print("\nFull probability breakdown:")
-    print(f"\n  {'Series':<6} {'Top Seed':<24} {'Bottom Seed':<24} {'P(top)':<9} {'P(bot)':<9} {'Predicted'}")
-    print(f"  {'-'*6} {'-'*24} {'-'*24} {'-'*9} {'-'*9} {'-'*15}")
+    print(f"\n  {'Ser':<5} {'Top Seed':<24} {'Bottom Seed':<24} {'P(top)':<9} {'P(bot)'}")
+    print(f"  {'-'*5} {'-'*24} {'-'*24} {'-'*9} {'-'*9}")
     for _, row in predictions.iterrows():
         top_name = f"({row['top_seed_rank']}) {row['top_seed_abbrev']}"
         bot_name = f"({row['bottom_seed_rank']}) {row['bottom_seed_abbrev']}"
         print(
-            f"  {row['series']:<6} {top_name:<24} {bot_name:<24} "
-            f"{row['p_top_seed_wins']:<9.1%} {row['p_bottom_seed_wins']:<9.1%} "
-            f"{row['predicted_winner_abbrev']}"
+            f"  {row['series']:<5} {top_name:<24} {bot_name:<24} "
+            f"{row['p_top_seed_wins']:<9.1%} {row['p_bottom_seed_wins']:.1%}"
         )
 
-    # 7. Save predictions CSV
+    # 4. Save predictions CSV
     out_csv = PROCESSED_DIR / "predictions_2026.csv"
     predictions.to_csv(out_csv, index=False)
     print(f"\nPredictions saved: {out_csv}")
 
-    # 8. Plot
+    # 5. Plot
     plot_predictions(predictions)
