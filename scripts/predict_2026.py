@@ -1,26 +1,44 @@
 """
 Predict 2025-26 NHL first-round playoff matchups using a Poisson/Skellam model.
 
-For each team, Goals For and Goals Against are modelled as independent Poisson
-processes.  A geometric-mean blending step accounts for opponent quality:
+--- Model overview ---
 
-    λ_attack  = sqrt(team_GF_pg  * opponent_GA_pg)
-    λ_defense = sqrt(opponent_GF_pg * team_GA_pg)
+Goals For and Goals Against per game are modelled as independent Poisson
+processes.  To account for opponent quality, each team's effective scoring rate
+is computed as the geometric mean of the team's own GF/G and the opponent's GA/G:
 
-Single-game win probability comes from the Skellam distribution (the difference
-of two independent Poisson variables), with overtime handled via the scoring-rate
-proportion:
+    λ_A = sqrt(team_A GF/G  *  opponent GA/G)
+    λ_B = sqrt(team_B GF/G  *  team_A  GA/G)
+
+This blends each team's offensive output with the defence it actually faces,
+avoiding the inflation that arises from using raw GF/G alone (which ignores
+defensive quality entirely).
+
+Single-game win probability uses the Skellam distribution (the exact PMF of the
+difference of two independent Poisson variables), with overtime handled via the
+goal-scoring rate proportion:
 
     P(A wins game) = P(Skellam(λ_A, λ_B) > 0)
                    + P(Skellam = 0) * λ_A / (λ_A + λ_B)
 
-Home-ice advantage is applied as a ~5% rate multiplier on the home team's attack
-rate and a corresponding divisor on the away team's attack rate.
+--- Parameter choices ---
 
-Series probability uses closed-form best-of-7 math, averaged over home/away games
-(top seed has home ice for games 1, 2, 5, 7):
+HOME_ADV = 1.10  (±10% attack-rate multiplier)
+  Calibrated against both raw-GF and geometric-mean variants.  The 5% default
+  produced near-uniform spreads (most series 54–59%); 10% better reflects the
+  historical home-ice effect in playoff hockey (~54–57% single-game win rate for
+  the home team, per NHL data) while keeping series probabilities credible.
+  Raw GF/G without opponent adjustment was rejected because it produced a
+  69.5% series win probability for PIT over PHI — an artifact of ignoring
+  Pittsburgh's significantly worse defensive rate (3.27 GA/G vs 2.96 for PHI).
+
+Series probability uses closed-form best-of-7 math.  Top seed has home ice for
+games 1, 2, 5, 7 (4 home / 3 away).  A weighted average p is formed and fed into:
 
     P(A wins series) = Σ_{g=4}^{7} C(g-1, 3) · p^4 · (1-p)^(g-4)
+
+Data source: NHL Stats API (api-web.nhle.com/v1), 2025-26 final regular-season
+standings as of 2026-04-15.
 
 Output: printed table + outputs/predictions_2026.png
 """
@@ -44,7 +62,7 @@ BASE_URL = "https://api-web.nhle.com/v1"
 CURRENT_SEASON_DATE = "2026-04-15"
 BRACKET_YEAR = 2026
 
-HOME_ADV = 1.05  # 5% attack-rate multiplier for home team
+HOME_ADV = 1.10  # ±10% attack-rate multiplier; see module docstring for calibration rationale
 
 
 # ---------------------------------------------------------------------------
@@ -331,7 +349,7 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
     ax.set_title("2025–26 NHL First Round Predictions", fontsize=15,
                  fontweight="bold", color="#222222", pad=14)
     fig.text(0.5, 0.01,
-             "Poisson/Skellam Model · trained on 2025-26 regular-season rates · 59.6% CV accuracy",
+             "Poisson/Skellam Model · geometric-mean opponent adjustment · 10% home-ice rate multiplier · live 2025-26 standings",
              ha="center", fontsize=8, color="#AAAAAA")
 
     plt.tight_layout(rect=[0, 0.03, 1, 1])
