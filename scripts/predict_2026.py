@@ -3,50 +3,54 @@ Predict 2025-26 NHL first-round playoff matchups using a Poisson/Skellam model.
 
 --- Model overview ---
 
-Poisson rates are sourced from MoneyPuck's scoreVenueAdjustedxGoalsFor/Against
-(xGF and xGA per game, all situations).  Score- and venue-adjusted expected
-goals better capture true shot quality than raw goals, which are noisier and
-can be inflated or suppressed by game-state effects (teams protecting a lead
-take fewer shots, artificially depressing xG estimates in raw data).
+Poisson rates come from MoneyPuck's scoreVenueAdjustedxGoalsFor/Against (xGF
+and xGA per game, all situations).  Score/venue-adjusted xG better captures
+true shot quality than raw goals, which are noisy and game-state-distorted.
 
-Backtested against 221 historical playoff series (2010-11 through 2024-25):
-  xG model accuracy:      60.2%  (+4.5pp vs raw GF/GA at 55.7%)
-  Brier score (xG):       0.2384 (lower is better)
-  Brier score (raw GF/GA): 0.2388
+Each team's xGA is further adjusted for goalie quality via Goals Saved Above
+Expected (GSAX = xGoals_faced - goals_allowed).  A positive-GSAX goalie
+suppresses the opponent's effective scoring rate; negative inflates it:
 
-To account for opponent quality, each team's effective scoring rate is the
-geometric mean of the team's xGF/G and the opponent's xGA/G:
+    adj_xGA = max(0.5, xGA_pg - goalie_gsax_pg)
 
-    λ_A = sqrt(team_A xGF/G  *  opponent xGA/G)
-    λ_B = sqrt(team_B xGF/G  *  team_A   xGA/G)
+Effective scoring rates use a geometric mean to blend offense with opponent defense:
 
-Single-game win probability uses the Skellam distribution (the exact PMF of the
-difference of two independent Poisson variables), with overtime handled via the
-goal-scoring rate proportion:
+    lam_A = sqrt(xGF_A * adj_xGA_B)
+    lam_B = sqrt(xGF_B * adj_xGA_A)
 
-    P(A wins game) = P(Skellam(λ_A, λ_B) > 0)
-                   + P(Skellam = 0) * λ_A / (λ_A + λ_B)
+Single-game win probability via the Skellam distribution (exact PMF of the
+difference of two Poisson variables), overtime resolved by scoring-rate proportion:
+
+    P(A wins) = P(Skellam(lam_A, lam_B) > 0) + P(tie) * lam_A / (lam_A + lam_B)
+
+--- Backtest results (221 series, 2010-11 through 2024-25) ---
+
+  Model                  Accuracy   Brier
+  Raw GF/GA              55.7%      0.2388
+  xG only                60.2%      0.2384
+  xG + goalie GSAX       60.2%      0.2375   <- this model
+
+GSAX preserves binary accuracy while improving Brier score (calibration).
+High-confidence predictions (>70%) were correct 70% of the time (10 series).
+Limitation: primary goalie proxied by season games-played; playoff starter
+may differ after mid-season trades.
 
 --- Parameter choices ---
 
-HOME_ADV = 1.10  (±10% attack-rate multiplier)
-  Calibrated against both raw-GF and geometric-mean variants.  The 5% default
-  produced near-uniform spreads (most series 54-59%); 10% better reflects the
-  historical home-ice effect in playoff hockey while keeping series probabilities
-  credible.  Raw GF/G without opponent adjustment was rejected — it inflated
-  PIT/PHI to 69.5% by ignoring Pittsburgh's poor defensive rate (3.27 GA/G).
+HOME_ADV = 1.10  (10% attack-rate multiplier for home team)
+  The 5% default compressed most matchups to 54-59%; 10% better reflects
+  historical playoff home-ice rates without distorting the spread.
+  Raw GF/G rejected: inflated PIT/PHI to 69.5% by ignoring defense quality.
 
-Series probability uses closed-form best-of-7 math.  Top seed has home ice for
-games 1, 2, 5, 7 (4 home / 3 away).  A weighted average p is formed and fed into:
+Series: closed-form best-of-7, top seed home for games 1,2,5,7 (4 of 7):
 
-    P(A wins series) = sum_{g=4}^{7} C(g-1, 3) * p^4 * (1-p)^(g-4)
+    P(series) = sum_{g=4}^{7} C(g-1,3) * p^4 * (1-p)^(g-4)
 
 Data sources:
-  - Poisson rates:  MoneyPuck (moneypuck.com), 2025-26 regular season
-  - Bracket/seeds: NHL Stats API (api-web.nhle.com/v1)
+  - xG + goalie GSAX: MoneyPuck (moneypuck.com), 2025-26 season
+  - Bracket / seeds:  NHL Stats API (api-web.nhle.com/v1)
 
-Run scripts/fetch_moneypuck.py first to refresh data/processed/moneypuck_xg.csv.
-
+Run scripts/fetch_moneypuck.py first to refresh the processed data files.
 Output: printed table + outputs/predictions_2026.png
 """
 
@@ -80,19 +84,26 @@ MP_SEASON = 2025  # first year of 2025-26 season
 
 
 def load_xg_rates() -> pd.DataFrame:
-    """
-    Load MoneyPuck score/venue-adjusted xG rates for the current season.
-    Run scripts/fetch_moneypuck.py to refresh this file.
-    """
+    """Load MoneyPuck xG rates for the current season."""
     path = PROCESSED_DIR / "moneypuck_xg.csv"
     if not path.exists():
-        raise FileNotFoundError(
-            f"{path} not found. Run scripts/fetch_moneypuck.py first."
-        )
+        raise FileNotFoundError(f"{path} not found. Run scripts/fetch_moneypuck.py first.")
     xg = pd.read_csv(path)
     current = xg[xg["season"] == MP_SEASON].set_index("team")
     if current.empty:
-        raise ValueError(f"No MoneyPuck data for season {MP_SEASON} in {path}.")
+        raise ValueError(f"No MoneyPuck data for season {MP_SEASON}.")
+    return current
+
+
+def load_goalie_gsax() -> pd.DataFrame:
+    """Load goalie GSAX for the current season (primary goalie = most GP)."""
+    path = PROCESSED_DIR / "moneypuck_goalies.csv"
+    if not path.exists():
+        raise FileNotFoundError(f"{path} not found. Run scripts/fetch_moneypuck.py first.")
+    g = pd.read_csv(path)
+    current = g[g["season"] == MP_SEASON].set_index("team")
+    if current.empty:
+        raise ValueError(f"No goalie data for season {MP_SEASON}.")
     return current
 
 
@@ -196,7 +207,9 @@ def compute_series_prob(top_gf: float, top_ga: float,
     return _series_win_prob(p_avg)
 
 
-def predict_matchups(matchups_raw: list[dict], xg_rates: pd.DataFrame) -> pd.DataFrame:
+def predict_matchups(matchups_raw: list[dict],
+                     xg_rates: pd.DataFrame,
+                     goalies: pd.DataFrame) -> pd.DataFrame:
     """Compute Poisson/Skellam win probabilities for each first-round series."""
     rows = []
     for m in matchups_raw:
@@ -208,9 +221,15 @@ def predict_matchups(matchups_raw: list[dict], xg_rates: pd.DataFrame) -> pd.Dat
         r_top = xg_rates.loc[top]
         r_bot = xg_rates.loc[bot]
 
+        gsax_top = goalies.loc[top, "gsax_pg"] if top in goalies.index else 0.0
+        gsax_bot = goalies.loc[bot, "gsax_pg"] if bot in goalies.index else 0.0
+
+        adj_xga_top = max(0.5, r_top["xga_pg"] - gsax_top)
+        adj_xga_bot = max(0.5, r_bot["xga_pg"] - gsax_bot)
+
         p_top = compute_series_prob(
-            r_top["xgf_pg"], r_top["xga_pg"],
-            r_bot["xgf_pg"], r_bot["xga_pg"],
+            r_top["xgf_pg"], adj_xga_top,
+            r_bot["xgf_pg"], adj_xga_bot,
         )
         p_bot = 1.0 - p_top
 
@@ -364,7 +383,7 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
     ax.set_title("2025–26 NHL First Round Predictions", fontsize=15,
                  fontweight="bold", color="#222222", pad=14)
     fig.text(0.5, 0.01,
-             "Poisson/Skellam Model · MoneyPuck xG rates · geometric-mean opponent adjustment · 10% home-ice multiplier · 60.2% backtested accuracy (221 series)",
+             "Poisson/Skellam · MoneyPuck xG + goalie GSAX · geometric-mean opp. adjustment · 10% home-ice multiplier · 60.2% backtested accuracy (221 series)",
              ha="center", fontsize=8, color="#AAAAAA")
 
     plt.tight_layout(rect=[0, 0.03, 1, 1])
@@ -381,13 +400,17 @@ def plot_predictions(predictions: pd.DataFrame) -> None:
 if __name__ == "__main__":
     print("=" * 60)
     print("2025-26 NHL Playoff First-Round Predictions")
-    print("Model: Poisson/Skellam (MoneyPuck xG rates + geometric mean + home ice)")
+    print("Model: Poisson/Skellam (MoneyPuck xG + goalie GSAX + home ice)")
     print("=" * 60)
 
-    # 1. Load MoneyPuck xG rates
+    # 1. Load MoneyPuck data
     print("\nLoading MoneyPuck xG rates (season 2025)...")
     xg_rates = load_xg_rates()
     print(f"  {len(xg_rates)} teams loaded")
+
+    print("Loading goalie GSAX data (season 2025)...")
+    goalies = load_goalie_gsax()
+    print(f"  {len(goalies)} teams loaded")
 
     # 2. Fetch bracket (seeds/names only)
     print("Fetching 2025-26 playoff bracket...")
@@ -395,7 +418,7 @@ if __name__ == "__main__":
     print(f"  {len(matchups_raw)} first-round matchups found")
 
     # 3. Compute Poisson/Skellam predictions
-    predictions = predict_matchups(matchups_raw, xg_rates)
+    predictions = predict_matchups(matchups_raw, xg_rates, goalies)
 
     # 4. Print results
     print("\n" + "=" * 60)
