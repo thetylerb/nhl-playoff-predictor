@@ -2,7 +2,7 @@
 
 How well does a team's regular-season record predict whether they win a playoff series - and which stat is the best predictor?
 
-This project pulls data from the NHL Stats API across **15 seasons (2010–11 through 2024–25)**, builds a dataset of **225 playoff series matchups**, and ranks regular-season stats by their ability to predict which team wins. It also trains a predictive model and applies it to the **2025–26 first-round matchups**.
+This project pulls data from the NHL Stats API across **15 seasons (2010-11 through 2024-25)**, builds a dataset of **225 playoff series matchups**, and ranks regular-season stats by their ability to predict which team wins. It also applies a Poisson/Skellam model to the **2025-26 first-round matchups**.
 
 ---
 
@@ -16,7 +16,7 @@ This project pulls data from the NHL Stats API across **15 seasons (2010–11 th
 
 Goal Differential is a close second at 58.9% accuracy - and actually edges out Goals Against on AUC (0.644), making it the more robust signal when you care about the *size* of the gap, not just the direction.
 
-The top stats all cluster between 55–60%:
+The top stats all cluster between 55-60%:
 
 | Stat | Accuracy | r | AUC |
 |---|---|---|---|
@@ -30,7 +30,7 @@ The top stats all cluster between 55–60%:
 
 A few things worth noting:
 - **Goals For / Game is nearly random** at 51.6% - raw offensive output barely predicts playoff outcomes. It's goals *allowed*, not goals *scored*, that separates playoff winners.
-- **All correlations are positive** across the full 15-season dataset, meaning every stat (except goals against, which is directionally correct when flipped) points the right way - but none of them point very hard. The ceiling on single-stat prediction is around 60%.
+- **All correlations are positive** across the full 15-season dataset, meaning every stat points the right way - but none of them point very hard. The ceiling on single-stat prediction is around 60%.
 - Expanding from 7 to 15 seasons modestly reduced accuracy estimates across the board (the original 7-season dataset peaked at ~61.5%). More data gives a more honest picture.
 
 **Accuracy degrades by round:** Goals Against / Game predicts Round 1 at 64.4% but drops to 50% by the conference finals - suggesting the further into the playoffs, the less regular-season stats matter.
@@ -39,57 +39,57 @@ A few things worth noting:
 
 ### 2. Does finishing higher in the regular season predict winning the Cup?
 
-Across 15 seasons, **only 1 of 15 Cup winners (6.7%) finished #1 overall in the regular season** - Chicago in the lockout-shortened 2012–13 season. Seven of fifteen (47%) finished in the top 4 league-wide; four winners finished outside the top 8.
+Across 15 seasons, **only 1 of 15 Cup winners (6.7%) finished #1 overall in the regular season** - Chicago in the lockout-shortened 2012-13 season. Seven of fifteen (47%) finished in the top 4 league-wide; four winners finished outside the top 8.
 
 Cup winners by regular-season league rank:
 
 | Season | Champion | League Rank | Conf Rank |
 |---|---|---|---|
-| 2010–11 | BOS | #7 | #4 |
-| 2011–12 | LAK | #13 | #8 |
-| 2012–13 | CHI | **#1** | #1 |
-| 2013–14 | LAK | #9 | #6 |
-| 2014–15 | CHI | #7 | #4 |
-| 2015–16 | PIT | #4 | #2 |
-| 2016–17 | PIT | #2 | #2 |
-| 2017–18 | WSH | #7 | #4 |
-| 2018–19 | STL | #12 | #5 |
-| 2019–20 | TBL | #3 | #2 |
-| 2020–21 | TBL | #8 | - |
-| 2021–22 | COL | #2 | #1 |
-| 2022–23 | VGK | #4 | #1 |
-| 2023–24 | FLA | #4 | #3 |
-| 2024–25 | FLA | #11 | #5 |
+| 2010-11 | BOS | #7 | #4 |
+| 2011-12 | LAK | #13 | #8 |
+| 2012-13 | CHI | **#1** | #1 |
+| 2013-14 | LAK | #9 | #6 |
+| 2014-15 | CHI | #7 | #4 |
+| 2015-16 | PIT | #4 | #2 |
+| 2016-17 | PIT | #2 | #2 |
+| 2017-18 | WSH | #7 | #4 |
+| 2018-19 | STL | #12 | #5 |
+| 2019-20 | TBL | #3 | #2 |
+| 2020-21 | TBL | #8 | - |
+| 2021-22 | COL | #2 | #1 |
+| 2022-23 | VGK | #4 | #1 |
+| 2023-24 | FLA | #4 | #3 |
+| 2024-25 | FLA | #11 | #5 |
 
 **Average league rank of Cup winner: 6.3.** The champion is typically a good-but-not-dominant regular season team - hot at the right time. Florida's back-to-back wins (ranked #4 in 2024, #11 in 2025) are the starkest recent example of regular season record failing to predict the Cup.
 
 ---
 
-### 3. 2025–26 First Round Predictions
+### 3. 2025-26 First Round Predictions
 
-A logistic regression + random forest ensemble trained on all 225 historical series (leave-one-season-out CV accuracy: **59.6%**) produces the following predictions for the 2025–26 playoffs:
+A Poisson/Skellam model using MoneyPuck expected goals and goalie GSAX produces the following predictions. Backtested at **60.2% accuracy across 221 historical series** (2010-11 through 2024-25).
 
 ![2026 Predictions](outputs/predictions_2026.png)
 
 **Eastern Conference**
 
-| Series | Matchup | Predicted Winner | Confidence |
+| Series | Matchup | Predicted Winner | Win Probability |
 |---|---|---|---|
-| A | (D1) BUF vs (WC1) BOS | **BUF** | 53.3% |
-| B | (D2) TBL vs (D3) MTL | **TBL** | 50.6% - coin flip |
-| C | (D1) CAR vs (WC2) OTT | **CAR** | 58.5% |
-| D | (D2) PIT vs (D3) PHI | **PHI** | 68.8% - upset pick |
+| A | (D1) BUF vs (WC1) BOS | **BUF** | 55.2% |
+| B | (D2) TBL vs (D3) MTL | **TBL** | 64.5% |
+| C | (D1) CAR vs (WC2) OTT | **CAR** | 62.0% |
+| D | (D2) PIT vs (D3) PHI | **PIT** | 52.1% |
 
 **Western Conference**
 
-| Series | Matchup | Predicted Winner | Confidence |
+| Series | Matchup | Predicted Winner | Win Probability |
 |---|---|---|---|
-| E | (D1) COL vs (WC2) LAK | **COL** | 72.6% - most confident |
-| F | (D2) DAL vs (D3) MIN | **DAL** | 54.0% |
-| G | (D1) VGK vs (WC1) UTA | **UTA** | 65.1% - upset pick |
-| H | (D2) EDM vs (D3) ANA | **ANA** | 53.4% - slight upset |
+| E | (D1) COL vs (WC2) LAK | **COL** | 77.4% - most confident |
+| F | (D2) DAL vs (D3) MIN | **DAL** | 54.3% |
+| G | (D1) VGK vs (WC1) UTA | **VGK** | 57.2% |
+| H | (D2) EDM vs (D3) ANA | **EDM** | 54.4% |
 
-The model's notable upset picks - PHI over PIT, UTA over VGK, and ANA over EDM - are driven by the lower-seeded teams having stronger defensive and goal differential numbers during the regular season, which the model weights most heavily. With a ceiling around 60% accuracy, treat these as probabilistic lean, not certainty.
+Probabilities reflect score/venue-adjusted xG rates blended with goalie Goals Saved Above Expected (GSAX). Notable effects: Linus Ullmark's poor GSAX (-12.81) hurts Ottawa; Jeremy Swayman's elite GSAX (+28.78) tightens the BUF/BOS line. COL is the model's strongest lean at 77%, driven by Colorado's elite shot generation and Scott Wedgewood's strong GSAX. Treat all probabilities as a directional signal, not certainty.
 
 ---
 
@@ -113,10 +113,13 @@ python scripts/build_matchup_dataset.py
 # 5. Run predictor analysis and generate leaderboard chart
 python scripts/predictor_analysis.py
 
-# 6. Generate 2025-26 first round predictions
+# 6. Download MoneyPuck xG and goalie data
+python scripts/fetch_moneypuck.py
+
+# 7. Generate 2025-26 first round predictions
 python scripts/predict_2026.py
 
-# 7. Explore interactively
+# 8. Explore interactively
 jupyter notebook
 ```
 
@@ -132,6 +135,8 @@ nhl_data/
 │       ├── standings_all.csv         # 462 rows - one per team per season
 │       ├── playoff_matchups.csv      # 225 rows - one per playoff series
 │       ├── predictor_results.csv     # Stat leaderboard
+│       ├── moneypuck_xg.csv          # MoneyPuck xG rates (2008-2025)
+│       ├── moneypuck_goalies.csv     # Primary goalie GSAX per team/season
 │       └── predictions_2026.csv      # 2025-26 first round predictions
 ├── notebooks/
 │   ├── 01_exploration.ipynb          # Standings EDA
@@ -145,12 +150,17 @@ nhl_data/
 │   ├── preprocess.py                 # Parse standings into CSV
 │   ├── build_matchup_dataset.py      # Join series matchups with stats
 │   ├── predictor_analysis.py         # Rank stats, generate leaderboard
-│   └── predict_2026.py               # Train model, predict 2025-26 R1
+│   ├── fetch_moneypuck.py            # Download MoneyPuck xG + goalie data
+│   ├── backtest_xg.py                # Three-way model backtest (raw/xG/xG+GSAX)
+│   └── predict_2026.py               # Predict 2025-26 R1 via Poisson/Skellam
 └── requirements.txt
 ```
 
 ---
 
-## Data Source
+## Data Sources
 
-All data is fetched from the public [NHL Stats API](https://api-web.nhle.com/v1). No API key required. Seasons covered: 2010–11 through 2024–25 (15 seasons, excluding no playoffs in 2004–05 lockout).
+- **NHL Stats API** (api-web.nhle.com/v1) - standings, playoff brackets. No API key required.
+- **MoneyPuck** (moneypuck.com) - score/venue-adjusted expected goals and goalie GSAX. Free for non-commercial use; credit required.
+
+Seasons covered: 2010-11 through 2024-25 (15 seasons).
